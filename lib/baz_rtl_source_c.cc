@@ -40,6 +40,7 @@
 #include <stdio.h>
 
 #include "rtl2832-tuner_e4000.h"
+#include "rtl2832-tuner_fc0012.h"
 #include "rtl2832-tuner_fc0013.h"
 
 /*
@@ -316,6 +317,10 @@ retry_notify:
 #define DEXATEK_VID		0x1d19
 #define DEXATEK_PID		0x1101
 
+/* Dexatek Technology Ltd. DK DVB-T Dongle */
+#define T803_VID		0x1f4d
+#define T803_PID		0xb803
+
 #define CTRL_IN			(LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_ENDPOINT_IN)
 #define CTRL_OUT		(LIBUSB_REQUEST_TYPE_VENDOR | LIBUSB_ENDPOINT_OUT)
 
@@ -406,6 +411,15 @@ int baz_rtl_source_c::find_device()
 		m_gain_limits[0] = -5;
 		m_gain_limits[1] = 30;
 		fprintf(stderr, "Found Terratec NOXON (revision 2) stick with E4000 tuner\n");
+		goto found_device;
+	}
+
+	devh = libusb_open_device_with_vid_pid(NULL, T803_VID, T803_PID);
+	if (devh > 0) {
+		tuner_type = TUNER_FC0012;
+		m_gain_limits[0] = -6.3;
+		m_gain_limits[1] = 19.7;
+		fprintf(stderr, "Found MyGigi/GTek T803 stick with FC0012 tuner\n");
 		goto found_device;
 	}
 
@@ -601,6 +615,7 @@ void baz_rtl_source_c::set_i2c_repeater(int on)
 void baz_rtl_source_c::rtl_init(void)
 {
 	unsigned int i;
+	uint16_t r;
 
 	/* default FIR coefficients used for DAB/FM by the Windows driver,
 	 * the DVB driver uses different ones */
@@ -617,6 +632,21 @@ void baz_rtl_source_c::rtl_init(void)
 	/* poweron demod */
 	rtl_write_reg(SYSB, DEMOD_CTL_1, 0x22, 1);
 	rtl_write_reg(SYSB, DEMOD_CTL, 0xe8, 1);
+
+	if (tuner_type == TUNER_FC0012) {
+		/* set FC0012 reset line to be an output */
+		r = rtl_read_reg(SYSB, GPD, 1);
+		r &= (~(0x30)); rtl_write_reg(SYSB, GPO, r, 1);
+		r = rtl_read_reg(SYSB, GPOE, 1);
+		r |= 0x2f; rtl_write_reg(SYSB, GPOE, r, 1);
+
+		/* Reset FC0012 */
+		r = rtl_read_reg(SYSB, GPO, 1);
+		r |= (0x10);
+		rtl_write_reg(SYSB, GPO, r, 1);
+		r &= (~(0x10));
+		rtl_write_reg(SYSB, GPO, r, 1);
+	}
 
 	/* reset demod (bit 3, soft_rst) */
 	demod_write_reg(1, 0x01, 0x14, 1);
@@ -675,6 +705,13 @@ bool baz_rtl_source_c::tuner_init()
 		if (FC0013_Open(this) != 0)
 		{
 			fprintf(stderr, _T("FC0013_Open failed"));
+			goto tuner_init_error;
+		}
+		break;
+	case TUNER_FC0012:
+		if (FC0012_Open(this) != 0)
+		{
+			fprintf(stderr, _T("FC0012_Open failed"));
 			goto tuner_init_error;
 		}
 		break;
@@ -889,6 +926,12 @@ bool baz_rtl_source_c::set_gain(/*double*/float dGain)
 	  191, 0x11,
 	  197, 0x10
 	};
+	static int mapGainsFC0012[] = {	// stolen from fc0013 and wrong :-/
+	  -63, 0x00,
+	  +71, 0x08,
+	  191, 0x11,
+	  197, 0x10
+	};
 	
 	int* mapGains = NULL;
 	int iCount = 0;
@@ -897,6 +940,11 @@ bool baz_rtl_source_c::set_gain(/*double*/float dGain)
 	  case TUNER_E4000:
 		mapGains = mapGainsE4000;
 		iCount = (sizeof(mapGainsE4000)/sizeof(mapGainsE4000[0])) / 2;
+		break;
+	  case TUNER_FC0012:
+#warning "Not using real gain map for FC0012 yet. Copy from DVB driver or fc0012 driver"
+		mapGains = mapGainsFC0012;
+		iCount = (sizeof(mapGainsFC0012)/sizeof(mapGainsFC0012[0])) / 2;
 		break;
 	  case TUNER_FC0013:
 		mapGains = mapGainsFC0013;
@@ -950,6 +998,18 @@ bool baz_rtl_source_c::set_gain(/*double*/float dGain)
 		goto gain_failure;
 	  }
 	}
+	else if (tuner_type == TUNER_FC0012)
+	{
+/* FIXME: Put put a SetGain function in rtl2832-tuner_fc0012.cc rather 
+          than having it hang out here */
+#warning "No gain control for FC0012 tuner"
+#if 0
+	  if (FC0012_SetRegMaskBits(this, 0x13, 4, 0, u8Write) != FC0012_OK)
+	  {
+		goto gain_failure;
+	  }
+#endif
+	}
 
 	m_dGain = (double)mapGains[i] / 10.0;
 
@@ -976,6 +1036,12 @@ bool baz_rtl_source_c::set_frequency(/*double*/float dFreq)
 	switch (tuner_type) {
 	case TUNER_E4000:
 		if (e4000_SetRfFreqHz(this, (unsigned long)dFreq) != 0)
+		{
+			goto freq_failure;
+		}
+		break;
+	case TUNER_FC0012:
+		if (FC0012_SetFrequency(this, (unsigned long)(dFreq/1000.0), 8) == 0)
 		{
 			goto freq_failure;
 		}

@@ -82,7 +82,8 @@ private:
 	enum TUNER_TYPE {
 		TUNER_UNKNOWN,
 		TUNER_E4000,
-		TUNER_FC0013
+		TUNER_FC0013,
+		TUNER_FC0012
 	} tuner_type;
 	struct libusb_device_handle *devh;
 	bool m_auto_tuner_mode;
